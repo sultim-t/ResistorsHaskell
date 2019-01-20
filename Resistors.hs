@@ -3,6 +3,9 @@ module Resistors (
   Connection,
   calcResistance ) where
 
+import Data.List (sortBy)
+
+
 -- Types --
 type Resistor = Float
 type Position = (Int, Int)
@@ -33,20 +36,31 @@ instance Show Connection where
   show = connToStr
 
 connToStr :: Connection -> String
-connToStr c = blocksToStr $ connToBlocks c $ countColumns c
+connToStr c = blocksToStr $ posToBlocks (positions c 0 0)
 
-connToBlocks :: Connection -> Int -> [[Block]]
-connToBlocks NoConnections _ = [[]]
-connToBlocks (Series _ c) width = [BResistor] : connToBlocks c width
-connToBlocks (Parallel c1 c2) width = [[BParL] ++ replicate (width - 2) BDashH ++ [BParInR]]
-                                   ++ mergeBlocks (connToBlocks c1 (width - 1))
-                                                  (connToBlocks c2 (width - 1))
-                                   ++ [[BParL] ++ replicate (width - 2) BDashH ++ [BParOutR]]
+posToBlocks :: [(Block, Position)] -> [[Block]]
+posToBlocks [] = []
+posToBlocks l = splitToMatrix (sortBlocks l) [] 0
 
-mergeBlocks :: [[Block]] -> [[Block]] -> [[Block]]
-mergeBlocks a [] = a
-mergeBlocks [] b = b
-mergeBlocks (x:xs) (y:ys) = concat (x : [y]) : mergeBlocks xs ys
+splitToMatrix :: [(Block, Position)] -> [Block] -> Int -> [[Block]]
+splitToMatrix [] row _ = [row]
+splitToMatrix ((b, (x, y)):xs) row prev = if y == prev
+                                          then splitToMatrix xs (addBlock row b x) y
+                                          else row : splitToMatrix xs (addBlock [] b x) y
+
+addBlock :: [Block] -> Block -> Int -> [Block]
+addBlock xs x n = if length xs < n
+                  then xs ++ replicate (n - length xs) BEmpty ++ [x]
+                  else xs ++ [x]
+
+sortBlocks :: [(Block, Position)] -> [(Block, Position)]
+sortBlocks = sortBy (\(_, xy1) (_, xy2) -> compareYX xy1 xy2)
+
+compareYX :: (Int, Int) -> (Int, Int) -> Ordering
+compareYX (x1, y1) (x2, y2) = let y = compare y1 y2 in
+                                if y == EQ
+                                then compare x1 x2
+                                else y
 
 positions :: Connection -> Int -> Int -> [(Block, Position)]
 positions NoConnections _ _ = []
@@ -55,6 +69,12 @@ positions (Parallel c1 c2) x y = [(BParL, (x, y))]
                                 ++ fill BDashH (x + 1, y) (countColumns c1 - 1)
                                 ++ [(BParInR, (x + countColumns c1, y))]
                                 ++ positions c1 x (y + 1) ++ positions c2 (x + countColumns c1) (y + 1)
+                                ++ [(BParOutR, (x + countColumns c1, outRow y c1 c2))]
+                                ++ fill BDashH (x + 1, outRow y c1 c2) (countColumns c1 - 1)
+                                ++ [(BParL, (x, outRow y c1 c2))]
+
+outRow :: Int -> Connection -> Connection -> Int
+outRow y c1 c2 = y + 1 + max (countRows c1) (countRows c2)
 
 fill :: Block -> Position -> Int -> [(Block, Position)]
 fill b (x, y) count = if count > 0
@@ -68,6 +88,14 @@ countParallel (Parallel c1 c2) = 1 + countParallel c1 + countParallel c2
 
 countColumns :: Connection -> Int
 countColumns c = 1 + countParallel c
+
+countSeries :: Connection -> Int
+countSeries NoConnections = 0
+countSeries (Series _ c) = 1 + countSeries c
+countSeries (Parallel c1 c2) = countSeries c1 + countSeries c2
+
+countRows :: Connection -> Int
+countRows c = countSeries c + 2 * countParallel c
 
 -- Blocks to string --
 blocksToStr :: [[Block]] -> String
