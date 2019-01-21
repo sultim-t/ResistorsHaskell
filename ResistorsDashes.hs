@@ -3,7 +3,7 @@ module Resistors (
   Connection,
   calcResistance ) where
 
-import Data.List (sortBy)
+import Data.List (sortBy, nub, delete)
 
 
 -- Types --
@@ -14,7 +14,7 @@ data Connection = NoConnections
                 | Series Resistor Connection
                 | Parallel Connection Connection
 
-data Block = BEmpty | BResistor
+data Block = BEmpty | BResistor Int
            | BDashH | BDashV
            | BParL
            | BParInR | BParOutR
@@ -22,7 +22,7 @@ data Block = BEmpty | BResistor
 
 instance Eq Block where
   BEmpty == BEmpty = True
-  BResistor == BResistor = True
+  BResistor _ == BResistor _ = True
   BDashH == BDashH = True
   BDashV == BDashV = True
   BParL == BParL = True
@@ -52,7 +52,14 @@ connToStr c = blocksToStr $ posToBlocks $ insertDashV $ positions c 0 0
 
 posToBlocks :: [(Block, Position)] -> [[Block]]
 posToBlocks [] = []
-posToBlocks l = splitToMatrix (sortBlocks l) [] 0
+posToBlocks l = let sorted = sortBlocks l
+                    unused = findUnused sorted [1..(maxRow sorted)]
+                    finalPos = removeUnused sorted unused
+                in splitToMatrix finalPos [] 0
+
+maxRow :: [(Block, Position)] -> Int
+maxRow [] = 0
+maxRow ((_, (_, y)):bs) = max y (maxRow bs)
 
 splitToMatrix :: [(Block, Position)] -> [Block] -> Int -> [[Block]]
 splitToMatrix [] row _ = [row]
@@ -74,16 +81,33 @@ compareYX (x1, y1) (x2, y2) = let y = compare y1 y2 in
                                 then compare x1 x2
                                 else y
 
+removeUnused :: [(Block, Position)] -> [Int] -> [(Block, Position)]
+removeUnused [] _ = []
+removeUnused (bl@(_, (_, y)):bs) ns = if y `elem` ns
+                                   then removeUnused bs ns
+                                   else bl : removeUnused bs ns
+
+findUnused :: [(Block, Position)] -> [Int] -> [Int]
+findUnused [] a = a
+findUnused ((b, (_, y)):bs) ns = if b /= BEmpty && b /= BDashV
+                                 then findUnused bs (delete y ns)
+                                 else findUnused bs ns
+
 insertDashV :: [(Block, Position)] -> [(Block, Position)]
-insertDashV bs = let ps = filterPos bs $ findCheckPos bs (maxRow bs)
+insertDashV bs = let ps = filterPos bs $ unique $ findCheckPos bs bs
                  in (bs ++ fmap (\p -> (BDashV, p)) ps)
+
+unique :: Eq a => [a] -> [a]
+unique = nub
 
 filterPos :: [(Block, Position)] -> [Position] -> [Position]
 filterPos bs = filter (checkPos bs)
 
-maxRow :: [(Block, Position)] -> Int
-maxRow [] = 0
-maxRow ((_, (_, y)):bs) = max y (maxRow bs)
+findCloseRow :: [(Block, Position)] -> Position -> Int
+findCloseRow [] _ = -1
+findCloseRow ((b, (x, y)):bs) p@(col, afterRow) = if x == col && y > afterRow && (b == BParL || b == BParOutR)
+                                                then y
+                                                else findCloseRow bs p
 
 checkPos :: [(Block, Position)] -> Position -> Bool
 checkPos [] _ = True
@@ -91,15 +115,15 @@ checkPos ((_, (x, y)):xs) p@(px, py) = if y == py && x == px
                                        then False
                                        else checkPos xs p
 
-findCheckPos :: [(Block, Position)] -> Int -> [Position]
+findCheckPos :: [(Block, Position)] -> [(Block, Position)] -> [Position]
 findCheckPos [] _ = []
-findCheckPos ((b, (x, y)):xs) rows = if b == BResistor
-                                     then fmap (\a -> (x, a)) [(y + 1)..rows] ++ findCheckPos xs rows
-                                     else findCheckPos xs rows
+findCheckPos ((b, (x, y)):xs) origin = if b == BResistor 0 || b == BParL
+                                       then fmap (\a -> (x, a)) [(y + 1)..(findCloseRow origin (x, y) - 1)] ++ findCheckPos xs origin
+                                       else findCheckPos xs origin
 
 positions :: Connection -> Int -> Int -> [(Block, Position)]
 positions NoConnections _ _ = []
-positions (Series _ c) x y = (BResistor, (x, y)) : positions c x (y + 1)
+positions (Series r c) x y = (BResistor (round r), (x, y)) : positions c x (y + 1)
 positions (Parallel c1 c2) x y = [(BParL, (x, y))]
                                 ++ fill BDashH (x + 1, y) (countColumns c1 - 1)
                                 ++ [(BParInR, (x + countColumns c1, y))]
@@ -134,7 +158,7 @@ countRows c = countSeries c + 2 * countParallel c
 
 -- Blocks to string --
 blocksToStr :: [[Block]] -> String
-blocksToStr blocks = foldr ((++) . blocksRowToStr) "" blocks
+blocksToStr = foldr ((++) . blocksRowToStr) ""
 
 blocksRowToStr :: [Block] -> String
 blocksRowToStr row = concatByBlock $ concatByRow $ blocksRowToStrs row
@@ -167,10 +191,6 @@ blockToStr BEmpty    = ["    ",
                         "    ",
                         "    ",
                         "    "]
-blockToStr BResistor = [" +-+",
-                        " | |",
-                        " +-+",
-                        "  | "]
 blockToStr BDashH    = ["    ",
                         "----",
                         "    ",
@@ -180,17 +200,23 @@ blockToStr BDashV    = ["  | ",
                         "  | ",
                         "  | "]
 blockToStr BParL     = ["  | ",
-                        "  +-",
+                       "  +-",
                         "  | ",
                         "  | "]
 blockToStr BParInR   = ["    ",
                         "--+ ",
                         "  | ",
                         "  | "]
-blockToStr BParOutR  = ["  | ",
+blockToStr BParOutR   = ["  | ",
                         "--+ ",
                         "    ",
                         "    "]
+
+blockToStr (BResistor n) = [" +-+", insertNumber n, " +-+", "  | "]
+
+insertNumber :: Int -> String
+insertNumber n | n >= 0 && n <= 9 = " |" ++ show n ++ "|"
+               | otherwise        = " | |"
 
 -- tests
 t1 :: Connection
@@ -211,15 +237,15 @@ t5 = Series 1 $ Parallel (Series 2 $ Series 1 $ Parallel (Series 1 NoConnections
                          (Series 4 NoConnections)
 
 t6 :: Connection
-t6 = Parallel (Parallel (Series 0 NoConnections)
-                        (Parallel (Series 0 NoConnections) (Series 0 NoConnections)))
+t6 = Parallel (Parallel (Series 9 NoConnections)
+                        (Parallel (Series 1 NoConnections) (Series 6 NoConnections)))
               (Parallel (Series 2 NoConnections) (Series 3 NoConnections))
 
 t7 :: Connection
-t7 = Parallel (Parallel (Parallel (Series 0 NoConnections) (Series 0 NoConnections))
-                        (Parallel (Series 0 NoConnections) (Series 0 NoConnections)))
-              (Parallel (Parallel (Series 0 NoConnections) (Series 0 NoConnections))
-                        (Parallel (Series 0 NoConnections) (Series 0 NoConnections)))
+t7 = Parallel (Parallel (Parallel (Series 1 NoConnections) (Series 7 NoConnections))
+                        (Parallel (Series 2 NoConnections) (Series 6 NoConnections)))
+              (Parallel (Parallel (Series 13 NoConnections) (Series 3 NoConnections))
+                        (Parallel (Series 2 NoConnections) (Series 3 NoConnections)))
 
 tw1 :: Connection
 tw1 =  Parallel (Series 0 NoConnections) (Series 3 NoConnections)
